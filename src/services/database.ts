@@ -1,7 +1,4 @@
-
-import Database from 'better-sqlite3';
-
-interface LogEntry {
+export interface LogEntry {
   uuid: string;
   details: string;
   api_name: string;
@@ -10,65 +7,34 @@ interface LogEntry {
   request_time: string;
 }
 
-class DatabaseService {
-  private db: Database.Database;
+const API_BASE = 'http://localhost:3001';
 
-  constructor(dbPath: string = './perf_report.db') {
-    this.db = new Database(dbPath);
-    this.initializeDatabase();
+export const databaseService = {
+  async getAllLogs(): Promise<LogEntry[]> {
+    const res = await fetch(`${API_BASE}/logs`);
+    return res.json();
+  },
+
+  async getLogsByDateRange(startDate: string, endDate: string): Promise<LogEntry[]> {
+    const res = await fetch(`${API_BASE}/logs/date?start=${startDate}&end=${endDate}`);
+    return res.json();
+  },
+
+  async getLogsByApiName(apiName: string): Promise<LogEntry[]> {
+    const res = await fetch(`${API_BASE}/logs/api/${encodeURIComponent(apiName)}`);
+    return res.json();
+  },
+
+  async getLogsByStatus(status: number): Promise<LogEntry[]> {
+    const res = await fetch(`${API_BASE}/logs/status/${status}`);
+    return res.json();
+  },
+
+  async insertLog(log: Omit<LogEntry, 'uuid'>): Promise<void> {
+    await fetch(`${API_BASE}/logs`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(log),
+    });
   }
-
-  private initializeDatabase() {
-    // Create the table if it doesn't exist
-    const createTable = `
-      CREATE TABLE IF NOT EXISTS perf_report (
-        uuid TEXT PRIMARY KEY,
-        details TEXT DEFAULT '',
-        api_name TEXT,
-        status INTEGER,
-        response_time_in_ms INTEGER,
-        request_time TEXT DEFAULT (datetime('now'))
-      )
-    `;
-    this.db.exec(createTable);
-  }
-
-  getAllLogs(): LogEntry[] {
-    const stmt = this.db.prepare('SELECT * FROM perf_report ORDER BY request_time DESC');
-    return stmt.all() as LogEntry[];
-  }
-
-  getLogsByDateRange(startDate: string, endDate: string): LogEntry[] {
-    const stmt = this.db.prepare(
-      'SELECT * FROM perf_report WHERE request_time BETWEEN ? AND ? ORDER BY request_time DESC'
-    );
-    return stmt.all(startDate, endDate) as LogEntry[];
-  }
-
-  getLogsByApiName(apiName: string): LogEntry[] {
-    const stmt = this.db.prepare('SELECT * FROM perf_report WHERE api_name = ? ORDER BY request_time DESC');
-    return stmt.all(apiName) as LogEntry[];
-  }
-
-  getLogsByStatus(status: number): LogEntry[] {
-    const stmt = this.db.prepare('SELECT * FROM perf_report WHERE status = ? ORDER BY request_time DESC');
-    return stmt.all(status) as LogEntry[];
-  }
-
-  insertLog(log: Omit<LogEntry, 'uuid'>): void {
-    const stmt = this.db.prepare(`
-      INSERT INTO perf_report (uuid, details, api_name, status, response_time_in_ms, request_time)
-      VALUES (?, ?, ?, ?, ?, ?)
-    `);
-    const uuid = crypto.randomUUID();
-    stmt.run(uuid, log.details, log.api_name, log.status, log.response_time_in_ms, log.request_time);
-  }
-
-  close() {
-    this.db.close();
-  }
-}
-
-// Export a singleton instance
-export const databaseService = new DatabaseService();
-export type { LogEntry };
+};
