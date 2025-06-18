@@ -1,9 +1,13 @@
-
-import React, { useMemo } from 'react';
+import React, { useState, useMemo } from 'react';
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
-import { TrendingDown, AlertTriangle, Clock } from "lucide-react";
+import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import { TrendingDown, AlertTriangle, Clock, Loader2 } from "lucide-react";
+import { useQuery } from '@tanstack/react-query';
+import { databaseService, LogFilters } from '../services/database';
 
 interface LogEntry {
   uuid: string;
@@ -15,116 +19,171 @@ interface LogEntry {
 }
 
 interface ApiStatsTableProps {
-  data: LogEntry[];
+  globalFilters?: LogFilters;
 }
 
-export const ApiStatsTable: React.FC<ApiStatsTableProps> = ({ data }) => {
-  const apiStats = useMemo(() => {
-    const grouped = data.reduce((acc, log) => {
-      const key = `${log.api_name}-${log.status}`;
-      if (!acc[key]) {
-        acc[key] = {
-          api_name: log.api_name,
-          status: log.status,
-          frequency: 0,
-          totalResponseTime: 0,
-          requests: []
-        };
-      }
-      acc[key].frequency += 1;
-      acc[key].totalResponseTime += log.response_time_in_ms;
-      acc[key].requests.push(log);
-      return acc;
-    }, {} as Record<string, any>);
+export const ApiStatsTable: React.FC<ApiStatsTableProps> = ({ globalFilters = {} }) => {
+  const [searchTerm, setSearchTerm] = useState('');
+  const [statusFilter, setStatusFilter] = useState('all');
+  const [apiFilter, setApiFilter] = useState('all');
+  const [appliedFilters, setAppliedFilters] = useState<LogFilters>({});
+
+  const { data: apiNames } = useQuery({
+    queryKey: ['api-names'],
+    queryFn: databaseService.getApiNames,
+  });
+
+  const combinedFilters = {
+    ...globalFilters,
+    ...appliedFilters
+  };
+
+  const { data: apiStats, isLoading } = useQuery({
+    queryKey: ['api-stats', combinedFilters],
+    queryFn: () => databaseService.getApiStats(combinedFilters),
+  });
+
+  const handleApplyFilters = () => {
+    const newFilters: LogFilters = {};
+    
+    if (searchTerm) newFilters.search = searchTerm;
+    if (statusFilter !== 'all') newFilters.status = statusFilter;
+    if (apiFilter !== 'all') newFilters.api_name = apiFilter;
+    
+    setAppliedFilters(newFilters);
+  };
+
+  const handleClearFilters = () => {
+    setSearchTerm('');
+    setStatusFilter('all');
+    setApiFilter('all');
+    setAppliedFilters({});
+  };
+
+  // Group stats by API for failure analysis
+  const failureStats = React.useMemo(() => {
+    if (!apiStats) return [];
+    
+    const grouped = apiStats
+      .filter(stat => stat.status >= 400)
+      .reduce((acc: any, stat) => {
+        if (!acc[stat.api_name]) {
+          acc[stat.api_name] = {
+            api_name: stat.api_name,
+            total_failures: 0,
+            avg_response_time: 0,
+            total_response_time: 0,
+            most_common_status: null,
+            most_common_count: 0
+          };
+        }
+        
+        acc[stat.api_name].total_failures += stat.frequency;
+        acc[stat.api_name].total_response_time += stat.avg_time * stat.frequency;
+        
+        if (stat.frequency > acc[stat.api_name].most_common_count) {
+          acc[stat.api_name].most_common_status = stat.status;
+          acc[stat.api_name].most_common_count = stat.frequency;
+        }
+        
+        return acc;
+      }, {});
 
     return Object.values(grouped).map((item: any) => ({
       ...item,
-      avgTime: Math.round(item.totalResponseTime / item.frequency)
-    })).sort((a: any, b: any) => b.frequency - a.frequency);
-  }, [data]);
+      avg_response_time: Math.round(item.total_response_time / item.total_failures)
+    })).sort((a: any, b: any) => b.total_failures - a.total_failures);
+  }, [apiStats]);
 
-  const failureStats = useMemo(() => {
-    const now = new Date();
-    const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
-    const weekAgo = new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000);
+  // Group stats by API for slowest analysis
+  const slowestApis = React.useMemo(() => {
+    if (!apiStats) return [];
     
-    const failures = data.filter(log => log.status >= 400);
-    
-    const grouped = failures.reduce((acc, log) => {
-      if (!acc[log.api_name]) {
-        acc[log.api_name] = {
-          api_name: log.api_name,
-          totalFailures: 0,
-          todayFailures: 0,
-          weekFailures: 0,
-          commonStatus: {},
-          avgResponseTime: 0,
-          totalResponseTime: 0
+    const grouped = apiStats.reduce((acc: any, stat) => {
+      if (!acc[stat.api_name]) {
+        acc[stat.api_name] = {
+          api_name: stat.api_name,
+          total_calls: 0,
+          total_time: 0,
+          slowest_call: 0
         };
       }
       
-      acc[log.api_name].totalFailures += 1;
-      acc[log.api_name].totalResponseTime += log.response_time_in_ms;
-      
-      if (new Date(log.request_time) >= today) {
-        acc[log.api_name].todayFailures += 1;
-      }
-      if (new Date(log.request_time) >= weekAgo) {
-        acc[log.api_name].weekFailures += 1;
-      }
-      
-      if (!acc[log.api_name].commonStatus[log.status]) {
-        acc[log.api_name].commonStatus[log.status] = 0;
-      }
-      acc[log.api_name].commonStatus[log.status] += 1;
+      acc[stat.api_name].total_calls += stat.frequency;
+      acc[stat.api_name].total_time += stat.avg_time * stat.frequency;
+      acc[stat.api_name].slowest_call = Math.max(acc[stat.api_name].slowest_call, stat.max_time || stat.avg_time);
       
       return acc;
-    }, {} as Record<string, any>);
-
-    return Object.values(grouped).map((item: any) => {
-      const mostCommonStatus = Object.entries(item.commonStatus)
-        .sort(([,a]: any, [,b]: any) => b - a)[0];
-      
-      return {
-        ...item,
-        avgResponseTime: Math.round(item.totalResponseTime / item.totalFailures),
-        mostCommonStatus: mostCommonStatus ? parseInt(mostCommonStatus[0]) : null,
-        mostCommonStatusCount: mostCommonStatus ? mostCommonStatus[1] : 0
-      };
-    }).sort((a: any, b: any) => b.totalFailures - a.totalFailures);
-  }, [data]);
-
-  const slowestApis = useMemo(() => {
-    const grouped = data.reduce((acc, log) => {
-      if (!acc[log.api_name]) {
-        acc[log.api_name] = {
-          api_name: log.api_name,
-          totalTime: 0,
-          count: 0,
-          slowestCall: log.response_time_in_ms,
-          slowestCallTime: log.request_time
-        };
-      }
-      
-      acc[log.api_name].totalTime += log.response_time_in_ms;
-      acc[log.api_name].count += 1;
-      
-      if (log.response_time_in_ms > acc[log.api_name].slowestCall) {
-        acc[log.api_name].slowestCall = log.response_time_in_ms;
-        acc[log.api_name].slowestCallTime = log.request_time;
-      }
-      
-      return acc;
-    }, {} as Record<string, any>);
+    }, {});
 
     return Object.values(grouped).map((item: any) => ({
       ...item,
-      avgResponseTime: Math.round(item.totalTime / item.count)
-    })).sort((a: any, b: any) => b.avgResponseTime - a.avgResponseTime);
-  }, [data]);
+      avg_response_time: Math.round(item.total_time / item.total_calls)
+    })).sort((a: any, b: any) => b.avg_response_time - a.avg_response_time);
+  }, [apiStats]);
+
+  if (isLoading) {
+    return (
+      <div className="flex items-center justify-center py-8">
+        <Loader2 className="h-8 w-8 animate-spin" />
+        <span className="ml-2">Loading API statistics...</span>
+      </div>
+    );
+  }
 
   return (
     <div className="space-y-6">
+      <Card>
+        <CardHeader>
+          <CardTitle>Filters</CardTitle>
+        </CardHeader>
+        <CardContent>
+          <div className="space-y-4">
+            <div className="flex flex-wrap gap-4">
+              <div className="flex-1 min-w-[200px]">
+                <Input
+                  placeholder="Search by API name..."
+                  value={searchTerm}
+                  onChange={(e) => setSearchTerm(e.target.value)}
+                />
+              </div>
+              
+              <Select value={statusFilter} onValueChange={setStatusFilter}>
+                <SelectTrigger className="w-[180px]">
+                  <SelectValue placeholder="Filter by status" />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="all">All Status Codes</SelectItem>
+                  <SelectItem value="success">Success (2xx)</SelectItem>
+                  <SelectItem value="error">Errors (4xx/5xx)</SelectItem>
+                </SelectContent>
+              </Select>
+              
+              <Select value={apiFilter} onValueChange={setApiFilter}>
+                <SelectTrigger className="w-[200px]">
+                  <SelectValue placeholder="Filter by API" />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="all">All APIs</SelectItem>
+                  {apiNames?.map(api => (
+                    <SelectItem key={api} value={api}>{api}</SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+            
+            <div className="flex gap-2">
+              <Button onClick={handleApplyFilters} size="sm">
+                Apply Filters
+              </Button>
+              <Button onClick={handleClearFilters} variant="outline" size="sm">
+                Clear Filters
+              </Button>
+            </div>
+          </div>
+        </CardContent>
+      </Card>
+
       <Tabs defaultValue="performance" className="w-full">
         <TabsList className="grid w-full grid-cols-3">
           <TabsTrigger value="performance">Performance Report</TabsTrigger>
@@ -149,7 +208,7 @@ export const ApiStatsTable: React.FC<ApiStatsTableProps> = ({ data }) => {
                     </tr>
                   </thead>
                   <tbody>
-                    {apiStats.map((stat: any, index) => (
+                    {apiStats?.map((stat: any, index) => (
                       <tr key={index} className="border-b hover:bg-gray-50">
                         <td className="p-4 font-medium">{stat.api_name}</td>
                         <td className="p-4">
@@ -168,11 +227,11 @@ export const ApiStatsTable: React.FC<ApiStatsTableProps> = ({ data }) => {
                         <td className="p-4 font-medium">{stat.frequency}</td>
                         <td className="p-4">
                           <span className={`font-medium ${
-                            stat.avgTime > 1000 ? 'text-red-600' :
-                            stat.avgTime > 500 ? 'text-yellow-600' :
+                            stat.avg_time > 1000 ? 'text-red-600' :
+                            stat.avg_time > 500 ? 'text-yellow-600' :
                             'text-green-600'
                           }`}>
-                            {stat.avgTime}
+                            {Math.round(stat.avg_time)}
                           </span>
                         </td>
                       </tr>
@@ -199,8 +258,6 @@ export const ApiStatsTable: React.FC<ApiStatsTableProps> = ({ data }) => {
                     <tr className="border-b bg-gray-50">
                       <th className="p-4 text-left font-semibold">API Name</th>
                       <th className="p-4 text-left font-semibold">Total Failures</th>
-                      <th className="p-4 text-left font-semibold">Today</th>
-                      <th className="p-4 text-left font-semibold">This Week</th>
                       <th className="p-4 text-left font-semibold">Most Common Error</th>
                       <th className="p-4 text-left font-semibold">Avg Response Time</th>
                     </tr>
@@ -210,23 +267,21 @@ export const ApiStatsTable: React.FC<ApiStatsTableProps> = ({ data }) => {
                       <tr key={index} className="border-b hover:bg-gray-50">
                         <td className="p-4 font-medium">{stat.api_name}</td>
                         <td className="p-4">
-                          <Badge variant="destructive">{stat.totalFailures}</Badge>
+                          <Badge variant="destructive">{stat.total_failures}</Badge>
                         </td>
-                        <td className="p-4 font-medium text-red-600">{stat.todayFailures}</td>
-                        <td className="p-4 font-medium text-orange-600">{stat.weekFailures}</td>
                         <td className="p-4">
-                          {stat.mostCommonStatus && (
+                          {stat.most_common_status && (
                             <div className="flex items-center gap-2">
                               <Badge className="bg-red-100 text-red-800">
-                                {stat.mostCommonStatus}
+                                {stat.most_common_status}
                               </Badge>
                               <span className="text-sm text-gray-600">
-                                ({stat.mostCommonStatusCount}x)
+                                ({stat.most_common_count}x)
                               </span>
                             </div>
                           )}
                         </td>
-                        <td className="p-4 font-medium text-red-600">{stat.avgResponseTime}ms</td>
+                        <td className="p-4 font-medium text-red-600">{stat.avg_response_time}ms</td>
                       </tr>
                     ))}
                   </tbody>
@@ -253,7 +308,6 @@ export const ApiStatsTable: React.FC<ApiStatsTableProps> = ({ data }) => {
                       <th className="p-4 text-left font-semibold">Avg Response Time</th>
                       <th className="p-4 text-left font-semibold">Slowest Call</th>
                       <th className="p-4 text-left font-semibold">Total Calls</th>
-                      <th className="p-4 text-left font-semibold">When</th>
                     </tr>
                   </thead>
                   <tbody>
@@ -262,20 +316,17 @@ export const ApiStatsTable: React.FC<ApiStatsTableProps> = ({ data }) => {
                         <td className="p-4 font-medium">{api.api_name}</td>
                         <td className="p-4">
                           <span className={`font-medium ${
-                            api.avgResponseTime > 1000 ? 'text-red-600' :
-                            api.avgResponseTime > 500 ? 'text-yellow-600' :
+                            api.avg_response_time > 1000 ? 'text-red-600' :
+                            api.avg_response_time > 500 ? 'text-yellow-600' :
                             'text-green-600'
                           }`}>
-                            {api.avgResponseTime}ms
+                            {api.avg_response_time}ms
                           </span>
                         </td>
                         <td className="p-4">
-                          <span className="font-bold text-red-600">{api.slowestCall}ms</span>
+                          <span className="font-bold text-red-600">{api.slowest_call}ms</span>
                         </td>
-                        <td className="p-4 font-medium">{api.count}</td>
-                        <td className="p-4 text-sm text-gray-600">
-                          {new Date(api.slowestCallTime).toLocaleString()}
-                        </td>
+                        <td className="p-4 font-medium">{api.total_calls}</td>
                       </tr>
                     ))}
                   </tbody>

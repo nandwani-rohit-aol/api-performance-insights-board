@@ -1,75 +1,77 @@
-import React, { useState, useMemo } from 'react';
+
+import React, { useState, useEffect } from 'react';
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from "@/components/ui/dialog";
-import { ArrowUpDown, Search, Filter, Eye } from "lucide-react";
-
-interface LogEntry {
-  uuid: string;
-  details: string;
-  api_name: string;
-  status: number;
-  response_time_in_ms: number;
-  request_time: string;
-}
+import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
+import { Pagination, PaginationContent, PaginationItem, PaginationLink, PaginationNext, PaginationPrevious } from "@/components/ui/pagination";
+import { ArrowUpDown, Search, Eye, Loader2 } from "lucide-react";
+import { databaseService, LogEntry, LogFilters } from '../services/database';
+import { useQuery } from '@tanstack/react-query';
 
 interface LogsTableProps {
-  data: LogEntry[];
+  globalFilters?: LogFilters;
 }
 
-export const LogsTable: React.FC<LogsTableProps> = ({ data }) => {
+export const LogsTable: React.FC<LogsTableProps> = ({ globalFilters = {} }) => {
+  const [page, setPage] = useState(1);
+  const [limit] = useState(50);
+  const [selectedLog, setSelectedLog] = useState<LogEntry | null>(null);
+  
+  // Local filter state
   const [searchTerm, setSearchTerm] = useState('');
   const [statusFilter, setStatusFilter] = useState('all');
   const [apiFilter, setApiFilter] = useState('all');
-  const [sortField, setSortField] = useState<keyof LogEntry>('request_time');
-  const [sortDirection, setSortDirection] = useState<'asc' | 'desc'>('desc');
-  const [selectedLog, setSelectedLog] = useState<LogEntry | null>(null);
+  const [sortField, setSortField] = useState<string>('request_time');
+  const [sortDirection, setSortDirection] = useState<'ASC' | 'DESC'>('DESC');
+  
+  // Applied filters (only updated when Apply button is clicked)
+  const [appliedFilters, setAppliedFilters] = useState<LogFilters>({});
 
-  const uniqueApis = useMemo(() => {
-    return Array.from(new Set(data.map(log => log.api_name))).sort();
-  }, [data]);
+  const { data: apiNames } = useQuery({
+    queryKey: ['api-names'],
+    queryFn: databaseService.getApiNames,
+  });
 
-  const filteredAndSortedData = useMemo(() => {
-    let filtered = data.filter(log => {
-      const matchesSearch = log.api_name.toLowerCase().includes(searchTerm.toLowerCase()) ||
-                           log.details.toLowerCase().includes(searchTerm.toLowerCase());
-      
-      const matchesStatus = statusFilter === 'all' || 
-                           (statusFilter === 'success' && log.status >= 200 && log.status < 300) ||
-                           (statusFilter === 'error' && log.status >= 400) ||
-                           log.status.toString() === statusFilter;
-      
-      const matchesApi = apiFilter === 'all' || log.api_name === apiFilter;
-      
-      return matchesSearch && matchesStatus && matchesApi;
-    });
+  const combinedFilters = {
+    ...globalFilters,
+    ...appliedFilters,
+    sort_field: sortField,
+    sort_direction: sortDirection
+  };
 
-    filtered.sort((a, b) => {
-      let aValue = a[sortField];
-      let bValue = b[sortField];
-      
-      if (sortField === 'request_time') {
-        aValue = new Date(aValue as string).getTime();
-        bValue = new Date(bValue as string).getTime();
-      }
-      
-      if (aValue < bValue) return sortDirection === 'asc' ? -1 : 1;
-      if (aValue > bValue) return sortDirection === 'asc' ? 1 : -1;
-      return 0;
-    });
+  const { data: logsData, isLoading, refetch } = useQuery({
+    queryKey: ['logs', page, limit, combinedFilters],
+    queryFn: () => databaseService.getLogs(page, limit, combinedFilters),
+  });
 
-    return filtered;
-  }, [data, searchTerm, statusFilter, apiFilter, sortField, sortDirection]);
+  const handleApplyFilters = () => {
+    const newFilters: LogFilters = {};
+    
+    if (searchTerm) newFilters.search = searchTerm;
+    if (statusFilter !== 'all') newFilters.status = statusFilter;
+    if (apiFilter !== 'all') newFilters.api_name = apiFilter;
+    
+    setAppliedFilters(newFilters);
+    setPage(1); // Reset to first page when applying new filters
+  };
 
-  const handleSort = (field: keyof LogEntry) => {
+  const handleClearFilters = () => {
+    setSearchTerm('');
+    setStatusFilter('all');
+    setApiFilter('all');
+    setAppliedFilters({});
+    setPage(1);
+  };
+
+  const handleSort = (field: string) => {
     if (sortField === field) {
-      setSortDirection(sortDirection === 'asc' ? 'desc' : 'asc');
+      setSortDirection(sortDirection === 'ASC' ? 'DESC' : 'ASC');
     } else {
       setSortField(field);
-      setSortDirection('desc');
+      setSortDirection('DESC');
     }
   };
 
@@ -84,6 +86,53 @@ export const LogsTable: React.FC<LogsTableProps> = ({ data }) => {
     return <Badge variant="secondary">{status}</Badge>;
   };
 
+  const renderPagination = () => {
+    if (!logsData?.pagination) return null;
+    
+    const { page: currentPage, total_pages } = logsData.pagination;
+    const pages = [];
+    
+    // Show first page, current page range, and last page
+    const startPage = Math.max(1, currentPage - 2);
+    const endPage = Math.min(total_pages, currentPage + 2);
+    
+    for (let i = startPage; i <= endPage; i++) {
+      pages.push(i);
+    }
+    
+    return (
+      <Pagination>
+        <PaginationContent>
+          <PaginationItem>
+            <PaginationPrevious 
+              onClick={() => setPage(Math.max(1, currentPage - 1))}
+              className={currentPage <= 1 ? 'opacity-50 cursor-not-allowed' : 'cursor-pointer'}
+            />
+          </PaginationItem>
+          
+          {pages.map(pageNum => (
+            <PaginationItem key={pageNum}>
+              <PaginationLink
+                onClick={() => setPage(pageNum)}
+                isActive={pageNum === currentPage}
+                className="cursor-pointer"
+              >
+                {pageNum}
+              </PaginationLink>
+            </PaginationItem>
+          ))}
+          
+          <PaginationItem>
+            <PaginationNext
+              onClick={() => setPage(Math.min(total_pages, currentPage + 1))}
+              className={currentPage >= total_pages ? 'opacity-50 cursor-not-allowed' : 'cursor-pointer'}
+            />
+          </PaginationItem>
+        </PaginationContent>
+      </Pagination>
+    );
+  };
+
   return (
     <>
       <Card>
@@ -94,126 +143,149 @@ export const LogsTable: React.FC<LogsTableProps> = ({ data }) => {
           </CardTitle>
           
           {/* Filters */}
-          <div className="flex flex-wrap gap-4 pt-4">
-            <div className="flex-1 min-w-[200px]">
-              <Input
-                placeholder="Search by API name or details..."
-                value={searchTerm}
-                onChange={(e) => setSearchTerm(e.target.value)}
-              />
+          <div className="space-y-4">
+            <div className="flex flex-wrap gap-4">
+              <div className="flex-1 min-w-[200px]">
+                <Input
+                  placeholder="Search by API name or details..."
+                  value={searchTerm}
+                  onChange={(e) => setSearchTerm(e.target.value)}
+                />
+              </div>
+              
+              <Select value={statusFilter} onValueChange={setStatusFilter}>
+                <SelectTrigger className="w-[180px]">
+                  <SelectValue placeholder="Filter by status" />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="all">All Status Codes</SelectItem>
+                  <SelectItem value="success">Success (2xx)</SelectItem>
+                  <SelectItem value="error">Errors (4xx/5xx)</SelectItem>
+                  <SelectItem value="200">200</SelectItem>
+                  <SelectItem value="400">400</SelectItem>
+                  <SelectItem value="404">404</SelectItem>
+                  <SelectItem value="424">424</SelectItem>
+                  <SelectItem value="500">500</SelectItem>
+                </SelectContent>
+              </Select>
+              
+              <Select value={apiFilter} onValueChange={setApiFilter}>
+                <SelectTrigger className="w-[200px]">
+                  <SelectValue placeholder="Filter by API" />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="all">All APIs</SelectItem>
+                  {apiNames?.map(api => (
+                    <SelectItem key={api} value={api}>{api}</SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
             </div>
             
-            <Select value={statusFilter} onValueChange={setStatusFilter}>
-              <SelectTrigger className="w-[180px]">
-                <SelectValue placeholder="Filter by status" />
-              </SelectTrigger>
-              <SelectContent>
-                <SelectItem value="all">All Status Codes</SelectItem>
-                <SelectItem value="success">Success (2xx)</SelectItem>
-                <SelectItem value="error">Errors (4xx/5xx)</SelectItem>
-                <SelectItem value="200">200</SelectItem>
-                <SelectItem value="400">400</SelectItem>
-                <SelectItem value="404">404</SelectItem>
-                <SelectItem value="424">424</SelectItem>
-                <SelectItem value="500">500</SelectItem>
-              </SelectContent>
-            </Select>
-            
-            <Select value={apiFilter} onValueChange={setApiFilter}>
-              <SelectTrigger className="w-[200px]">
-                <SelectValue placeholder="Filter by API" />
-              </SelectTrigger>
-              <SelectContent>
-                <SelectItem value="all">All APIs</SelectItem>
-                {uniqueApis.map(api => (
-                  <SelectItem key={api} value={api}>{api}</SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
+            <div className="flex gap-2">
+              <Button onClick={handleApplyFilters} size="sm">
+                Apply Filters
+              </Button>
+              <Button onClick={handleClearFilters} variant="outline" size="sm">
+                Clear Filters
+              </Button>
+            </div>
           </div>
         </CardHeader>
         
         <CardContent>
-          <div className="rounded-md border">
-            <div className="overflow-x-auto">
-              <table className="w-full">
-                <thead>
-                  <tr className="border-b bg-gray-50">
-                    <th className="p-4 text-left">
-                      <Button
-                        variant="ghost"
-                        onClick={() => handleSort('request_time')}
-                        className="font-semibold"
-                      >
-                        Time <ArrowUpDown className="ml-2 h-4 w-4" />
-                      </Button>
-                    </th>
-                    <th className="p-4 text-left">
-                      <Button
-                        variant="ghost"
-                        onClick={() => handleSort('api_name')}
-                        className="font-semibold"
-                      >
-                        API Name <ArrowUpDown className="ml-2 h-4 w-4" />
-                      </Button>
-                    </th>
-                    <th className="p-4 text-left">
-                      <Button
-                        variant="ghost"
-                        onClick={() => handleSort('status')}
-                        className="font-semibold"
-                      >
-                        Status <ArrowUpDown className="ml-2 h-4 w-4" />
-                      </Button>
-                    </th>
-                    <th className="p-4 text-left">
-                      <Button
-                        variant="ghost"
-                        onClick={() => handleSort('response_time_in_ms')}
-                        className="font-semibold"
-                      >
-                        Response Time <ArrowUpDown className="ml-2 h-4 w-4" />
-                      </Button>
-                    </th>
-                    <th className="p-4 text-left font-semibold">Details</th>
-                    <th className="p-4 text-left font-semibold">Actions</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {filteredAndSortedData.map((log) => (
-                    <tr key={log.uuid} className="border-b hover:bg-gray-50 cursor-pointer" onClick={() => setSelectedLog(log)}>
-                      <td className="p-4 text-sm">
-                        {new Date(log.request_time).toLocaleString()}
-                      </td>
-                      <td className="p-4 font-medium">{log.api_name}</td>
-                      <td className="p-4">{getStatusBadge(log.status)}</td>
-                      <td className="p-4">
-                        <span className={`font-medium ${
-                          log.response_time_in_ms > 1000 ? 'text-red-600' :
-                          log.response_time_in_ms > 500 ? 'text-yellow-600' :
-                          'text-green-600'
-                        }`}>
-                          {log.response_time_in_ms}ms
-                        </span>
-                      </td>
-                      <td className="p-4 text-sm text-gray-600 max-w-xs truncate">
-                        {log.details || 'No details'}
-                      </td>
-                      <td className="p-4">
-                        <Button variant="outline" size="sm" onClick={(e) => { e.stopPropagation(); setSelectedLog(log); }}>
-                          <Eye className="h-4 w-4" />
-                        </Button>
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
+          {isLoading ? (
+            <div className="flex items-center justify-center py-8">
+              <Loader2 className="h-8 w-8 animate-spin" />
+              <span className="ml-2">Loading logs...</span>
             </div>
-          </div>
-          
-          <div className="mt-4 text-sm text-gray-600">
-            Showing {filteredAndSortedData.length} of {data.length} logs
-          </div>
+          ) : (
+            <>
+              <div className="rounded-md border">
+                <div className="overflow-x-auto">
+                  <table className="w-full">
+                    <thead>
+                      <tr className="border-b bg-gray-50">
+                        <th className="p-4 text-left">
+                          <Button
+                            variant="ghost"
+                            onClick={() => handleSort('request_time')}
+                            className="font-semibold"
+                          >
+                            Time <ArrowUpDown className="ml-2 h-4 w-4" />
+                          </Button>
+                        </th>
+                        <th className="p-4 text-left">
+                          <Button
+                            variant="ghost"
+                            onClick={() => handleSort('api_name')}
+                            className="font-semibold"
+                          >
+                            API Name <ArrowUpDown className="ml-2 h-4 w-4" />
+                          </Button>
+                        </th>
+                        <th className="p-4 text-left">
+                          <Button
+                            variant="ghost"
+                            onClick={() => handleSort('status')}
+                            className="font-semibold"
+                          >
+                            Status <ArrowUpDown className="ml-2 h-4 w-4" />
+                          </Button>
+                        </th>
+                        <th className="p-4 text-left">
+                          <Button
+                            variant="ghost"
+                            onClick={() => handleSort('response_time_in_ms')}
+                            className="font-semibold"
+                          >
+                            Response Time <ArrowUpDown className="ml-2 h-4 w-4" />
+                          </Button>
+                        </th>
+                        <th className="p-4 text-left font-semibold">Details</th>
+                        <th className="p-4 text-left font-semibold">Actions</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {logsData?.logs.map((log) => (
+                        <tr key={log.uuid} className="border-b hover:bg-gray-50 cursor-pointer" onClick={() => setSelectedLog(log)}>
+                          <td className="p-4 text-sm">
+                            {new Date(log.request_time).toLocaleString()}
+                          </td>
+                          <td className="p-4 font-medium">{log.api_name}</td>
+                          <td className="p-4">{getStatusBadge(log.status)}</td>
+                          <td className="p-4">
+                            <span className={`font-medium ${
+                              log.response_time_in_ms > 1000 ? 'text-red-600' :
+                              log.response_time_in_ms > 500 ? 'text-yellow-600' :
+                              'text-green-600'
+                            }`}>
+                              {log.response_time_in_ms}ms
+                            </span>
+                          </td>
+                          <td className="p-4 text-sm text-gray-600 max-w-xs truncate">
+                            {log.details || 'No details'}
+                          </td>
+                          <td className="p-4">
+                            <Button variant="outline" size="sm" onClick={(e) => { e.stopPropagation(); setSelectedLog(log); }}>
+                              <Eye className="h-4 w-4" />
+                            </Button>
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+              
+              <div className="mt-4 flex items-center justify-between">
+                <div className="text-sm text-gray-600">
+                  Showing {logsData?.logs.length || 0} of {logsData?.pagination.total || 0} logs
+                </div>
+                {renderPagination()}
+              </div>
+            </>
+          )}
         </CardContent>
       </Card>
 

@@ -1,5 +1,5 @@
 
-import React, { useState, useMemo } from 'react';
+import React, { useState } from 'react';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Badge } from "@/components/ui/badge";
@@ -7,43 +7,24 @@ import { Clock, AlertTriangle, CheckCircle, XCircle, TrendingUp, TrendingDown } 
 import { LogsTable } from "@/components/LogsTable";
 import { PerformanceChart } from "@/components/PerformanceChart";
 import { ApiStatsTable } from "@/components/ApiStatsTable";
-import { useDashboardData } from "@/hooks/useDashboardData";
+import { useQuery } from '@tanstack/react-query';
+import { databaseService } from '../services/database';
 
 const Dashboard = () => {
-  const { data: logs, isLoading } = useDashboardData();
+  const [globalFilters, setGlobalFilters] = useState({});
   
-  const metrics = useMemo(() => {
-    if (!logs) return null;
-    
-    const now = new Date();
-    const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
-    const weekAgo = new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000);
-    
-    const todayLogs = logs.filter(log => new Date(log.request_time) >= today);
-    const weekLogs = logs.filter(log => new Date(log.request_time) >= weekAgo);
-    
-    const successfulCalls = logs.filter(log => log.status >= 200 && log.status < 300);
-    const errorCalls = logs.filter(log => log.status >= 400);
-    
-    const avgResponseTime = logs.length > 0 
-      ? Math.round(logs.reduce((sum, log) => sum + log.response_time_in_ms, 0) / logs.length)
-      : 0;
-      
-    const slowestCall = logs.reduce((slowest, log) => 
-      log.response_time_in_ms > (slowest?.response_time_in_ms || 0) ? log : slowest, null);
-    
-    return {
-      totalCalls: logs.length,
-      todayCalls: todayLogs.length,
-      weekCalls: weekLogs.length,
-      successRate: logs.length > 0 ? Math.round((successfulCalls.length / logs.length) * 100) : 0,
-      errorRate: logs.length > 0 ? Math.round((errorCalls.length / logs.length) * 100) : 0,
-      avgResponseTime,
-      slowestCall
-    };
-  }, [logs]);
+  const { data: stats, isLoading: statsLoading } = useQuery({
+    queryKey: ['dashboard-stats', globalFilters],
+    queryFn: () => databaseService.getDashboardStats(globalFilters),
+  });
 
-  if (isLoading) {
+  // For charts, we still need some sample data - you might want to create a separate endpoint for this
+  const { data: chartData } = useQuery({
+    queryKey: ['chart-data'],
+    queryFn: () => databaseService.getLogs(1, 100), // Get recent 100 logs for chart
+  });
+
+  if (statsLoading) {
     return (
       <div className="min-h-screen flex items-center justify-center">
         <div className="text-center">
@@ -70,7 +51,7 @@ const Dashboard = () => {
               <TrendingUp className="h-4 w-4 text-blue-600" />
             </CardHeader>
             <CardContent>
-              <div className="text-2xl font-bold text-blue-900">{metrics?.totalCalls || 0}</div>
+              <div className="text-2xl font-bold text-blue-900">{stats?.total_calls || 0}</div>
               <p className="text-xs text-blue-600 mt-1">All time</p>
             </CardContent>
           </Card>
@@ -81,7 +62,7 @@ const Dashboard = () => {
               <CheckCircle className="h-4 w-4 text-green-600" />
             </CardHeader>
             <CardContent>
-              <div className="text-2xl font-bold text-green-900">{metrics?.successRate || 0}%</div>
+              <div className="text-2xl font-bold text-green-900">{stats?.success_rate || 0}%</div>
               <p className="text-xs text-green-600 mt-1">2xx status codes</p>
             </CardContent>
           </Card>
@@ -92,7 +73,7 @@ const Dashboard = () => {
               <Clock className="h-4 w-4 text-amber-600" />
             </CardHeader>
             <CardContent>
-              <div className="text-2xl font-bold text-amber-900">{metrics?.avgResponseTime || 0}ms</div>
+              <div className="text-2xl font-bold text-amber-900">{stats?.avg_response_time || 0}ms</div>
               <p className="text-xs text-amber-600 mt-1">All endpoints</p>
             </CardContent>
           </Card>
@@ -103,14 +84,14 @@ const Dashboard = () => {
               <AlertTriangle className="h-4 w-4 text-red-600" />
             </CardHeader>
             <CardContent>
-              <div className="text-2xl font-bold text-red-900">{metrics?.errorRate || 0}%</div>
+              <div className="text-2xl font-bold text-red-900">{stats?.error_rate || 0}%</div>
               <p className="text-xs text-red-600 mt-1">4xx & 5xx errors</p>
             </CardContent>
           </Card>
         </div>
 
         {/* Slowest Call Alert */}
-        {metrics?.slowestCall && (
+        {stats?.slowest_call && (
           <Card className="bg-gradient-to-r from-orange-50 to-red-50 border-orange-200">
             <CardHeader>
               <CardTitle className="flex items-center gap-2 text-orange-800">
@@ -121,17 +102,17 @@ const Dashboard = () => {
             <CardContent>
               <div className="flex items-center justify-between">
                 <div>
-                  <p className="font-semibold text-orange-900">{metrics.slowestCall.api_name}</p>
+                  <p className="font-semibold text-orange-900">{stats.slowest_call.api_name}</p>
                   <p className="text-sm text-orange-700">
-                    {new Date(metrics.slowestCall.request_time).toLocaleString()}
+                    {new Date(stats.slowest_call.request_time).toLocaleString()}
                   </p>
                 </div>
                 <div className="text-right">
                   <div className="text-2xl font-bold text-orange-900">
-                    {metrics.slowestCall.response_time_in_ms}ms
+                    {stats.slowest_call.response_time_in_ms}ms
                   </div>
-                  <Badge variant={metrics.slowestCall.status >= 400 ? "destructive" : "secondary"}>
-                    {metrics.slowestCall.status}
+                  <Badge variant={stats.slowest_call.status >= 400 ? "destructive" : "secondary"}>
+                    {stats.slowest_call.status}
                   </Badge>
                 </div>
               </div>
@@ -140,28 +121,28 @@ const Dashboard = () => {
         )}
 
         {/* Tabs for different views */}
-        <Tabs defaultValue="overview" className="space-y-6">
+        <Tabs defaultValue="logs" className="space-y-6">
           <TabsList className="grid w-full grid-cols-4">
-            <TabsTrigger value="overview">Overview</TabsTrigger>
             <TabsTrigger value="logs">Logs</TabsTrigger>
+            <TabsTrigger value="overview">Overview</TabsTrigger>
             <TabsTrigger value="analytics">Analytics</TabsTrigger>
             <TabsTrigger value="reports">Reports</TabsTrigger>
           </TabsList>
 
-          <TabsContent value="overview" className="space-y-6">
-            <PerformanceChart data={logs || []} />
+          <TabsContent value="logs">
+            <LogsTable globalFilters={globalFilters} />
           </TabsContent>
 
-          <TabsContent value="logs">
-            <LogsTable data={logs || []} />
+          <TabsContent value="overview" className="space-y-6">
+            <PerformanceChart data={chartData?.logs || []} />
           </TabsContent>
 
           <TabsContent value="analytics">
-            <PerformanceChart data={logs || []} />
+            <PerformanceChart data={chartData?.logs || []} />
           </TabsContent>
 
           <TabsContent value="reports">
-            <ApiStatsTable data={logs || []} />
+            <ApiStatsTable globalFilters={globalFilters} />
           </TabsContent>
         </Tabs>
       </div>
